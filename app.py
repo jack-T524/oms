@@ -4,6 +4,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 import io
+import time  # <--- 新增這一行！用來控制暫停時間
 
 # ==========================================
 # 1. 系統設定與 Google 試算表連線
@@ -96,8 +97,9 @@ with tab1:
                     sheet_customers.append_row(["姓名", "電話", "地址"])
                 sheet_customers.append_row([name, str(new_phone), str(new_address)])
             
-            st.success("訂單已成功寫入 Google 試算表！")
-            st.rerun()
+            st.success(f"✅ 成功！{name} 的訂單已經寫入資料庫了。")
+            time.sleep(1.5)  # 讓系統停頓 1.5 秒，讓你看到提示
+            st.rerun()       # 1.5 秒後再重新整理畫面，清空輸入框
 
 # ----------------- 分頁 2: 訂單看板與出貨 (自動併單核心) -----------------
 with tab2:
