@@ -101,12 +101,52 @@ with tab1:
 
 # ----------------- 分頁 2: 訂單看板與出貨 (自動併單核心) -----------------
 with tab2:
-    st.subheader("2. 訂單狀態與自動併單匯出")
+    st.subheader("2. 訂單狀態與出貨管理")
     
     records_orders = sheet_orders.get_all_records()
     if records_orders:
         df_orders = pd.DataFrame(records_orders)
         
+        # === 新增功能：處理「待確認」訂單 (補件區) ===
+        if '狀態' in df_orders.columns:
+            pending_orders = df_orders[df_orders['狀態'] == '待確認']
+            if not pending_orders.empty:
+                st.warning("⚠️ 您有尚未補齊收件資訊的訂單，請補齊後轉入出貨流程：")
+                # 抓出所有缺資料的客戶名單
+                pending_names = pending_orders['姓名'].unique()
+                
+                col_sel, col_p, col_a, col_btn = st.columns([1.5, 1.5, 1.5, 1])
+                with col_sel:
+                    selected_name = st.selectbox("選擇要補齊的客戶", pending_names)
+                with col_p:
+                    new_phone = st.text_input("輸入電話")
+                with col_a:
+                    new_address = st.text_input("輸入地址")
+                with col_btn:
+                    st.write("") # 排版用空白
+                    if st.button("💾 更新並解鎖出貨", use_container_width=True):
+                        if new_phone and new_address:
+                            # 1. 將新資料寫入 Customers 熟客名單
+                            if len(sheet_customers.get_all_values()) == 0:
+                                sheet_customers.append_row(["姓名", "電話", "地址"])
+                            sheet_customers.append_row([selected_name, str(new_phone), str(new_address)])
+                            
+                            # 2. 將 Google 試算表中該客戶的狀態從「待確認」改為「可出貨」
+                            all_values = sheet_orders.get_all_values()
+                            for i, row in enumerate(all_values):
+                                if i == 0: continue # 跳過標題列
+                                # row[1] 是姓名, row[5] 是狀態 (索引從 0 開始)
+                                if row[1] == selected_name and row[5] == '待確認':
+                                    # Google Sheet 的列數是從 1 開始，所以是 i+1
+                                    sheet_orders.update_cell(i+1, 6, '可出貨')
+                            
+                            st.success(f"✅ {selected_name} 的資料已補齊！系統已自動併單。")
+                            st.rerun() # 重新整理畫面
+                        else:
+                            st.error("請完整輸入電話與地址！")
+                st.divider()
+        # ==========================================
+
         st.markdown("##### 📦 準備出貨與匯出 Excel (滿3000免運，未滿加60)")
         
         # 只抓取「可出貨」的訂單來併單
@@ -117,7 +157,8 @@ with tab2:
         
         if not df_ready.empty:
             # 結合熟客資料庫獲取電話地址
-            df_merged = pd.merge(df_ready, df_customers, on='姓名', how='left')
+            df_customers_updated = get_all_customers() # 抓取最新客戶資料
+            df_merged = pd.merge(df_ready, df_customers_updated, on='姓名', how='left')
             
             # 強制轉換數字格式，避免 Google 試算表讀取成字串導致計算錯誤
             df_merged['單價'] = pd.to_numeric(df_merged['單價'], errors='coerce').fillna(0).astype(int)
@@ -128,7 +169,7 @@ with tab2:
             # 計算單項小計
             df_merged['商品小計'] = df_merged['單價'] * df_merged['數量']
             
-            # 執行群組併單 (把同一個客人的商品包起來)
+            # 執行群組併單
             df_consolidated = df_merged.groupby(['姓名', '電話', '地址']).agg({
                 '出貨明細': lambda x: '、\n'.join(x),
                 '商品小計': 'sum'
@@ -163,8 +204,3 @@ with tab2:
             st.info("目前沒有『可出貨』狀態的訂單可供併單。")
     else:
         st.info("試算表中尚無訂單資料。")
-
-# ----------------- 分頁 3: CRM 資料庫 -----------------
-with tab3:
-    st.subheader("3. 熟客名單 (連動 Google 試算表)")
-    st.dataframe(df_customers, use_container_width=True)
