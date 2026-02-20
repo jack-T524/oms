@@ -25,7 +25,7 @@ try:
     ws_orders = sheet.worksheet("Orders")
     ws_customers = sheet.worksheet("Customers")
 except Exception as e:
-    st.error("⚠️ 系統連線 Google 試算表失敗，請檢查金鑰與網址設定。")
+    st.error(f"⚠️ 系統連線 Google 試算表失敗，真實錯誤為： {e}")
     st.stop()
 
 # ==========================================
