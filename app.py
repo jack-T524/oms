@@ -5,49 +5,63 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime
 import io
 
-st.set_page_config(page_title="雲端理單控制台", layout="wide")
-st.title("📦 雲端化電商出貨後台系統 (連動 Google 試算表)")
+# ==========================================
+# 1. 系統設定與 Google 試算表連線
+# ==========================================
+st.set_page_config(page_title="超級客服與理單控制台", layout="wide")
 
-# ==========================================
-# 1. 連線到 Google Sheets
-# ==========================================
+# ⚠️ 請把這裡換成你剛剛建立的 Google 試算表網址
+SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1fPnXxVa1YhxnD8_eVneCjZNdlAx60LdIoycRO2ubSKU/edit?gid=845570727#gid=845570727"
+
 @st.cache_resource
-def init_connection():
-    scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-    # 讀取雲端後台設定的安全金鑰
-    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
+def connect_gspread():
+    """透過 Streamlit Secrets 安全連線到 Google Sheets"""
+    # 讀取剛剛貼在 Secrets 裡的 JSON 內容
+    credentials_dict = dict(st.secrets["gcp_service_account"])
+    scopes = [
+        'https://www.googleapis.com/auth/spreadsheets',
+        'https://www.googleapis.com/auth/drive'
+    ]
+    creds = Credentials.from_service_account_info(credentials_dict, scopes=scopes)
     client = gspread.authorize(creds)
-    sheet = client.open_by_url(st.secrets["spreadsheet_url"])
-    return sheet
+    return client.open_by_url(SPREADSHEET_URL)
 
 try:
-    sheet = init_connection()
-    ws_orders = sheet.worksheet("Orders")
-    ws_customers = sheet.worksheet("Customers")
+    doc = connect_gspread()
+    sheet_orders = doc.worksheet("Orders")
+    sheet_customers = doc.worksheet("Customers")
 except Exception as e:
     st.error(f"⚠️ 系統連線 Google 試算表失敗，真實錯誤為： {e}")
     st.stop()
 
 # ==========================================
-# 2. 輔助函式與資料讀取
+# 2. 輔助函式 (解析與資料庫操作)
 # ==========================================
 def parse_boss_text(text):
+    """解析老闆的文字：假設格式為 '品項 價格 人名 數量'"""
     parts = text.split()
     if len(parts) >= 4:
         return {"item": parts[0], "price": parts[1], "name": parts[2], "qty": parts[3]}
-    return {"item": "", "price": "", "name": "", "qty": ""}
+    return {"item": "", "price": "", "name": "", "qty": "1"}
 
-# 即時抓取試算表資料轉成 DataFrame
-df_orders = pd.DataFrame(ws_orders.get_all_records())
-df_customers = pd.DataFrame(ws_customers.get_all_records())
-# 確保欄位型態一致
-if not df_customers.empty:
-    df_customers['姓名'] = df_customers['姓名'].astype(str)
+def get_all_customers():
+    records = sheet_customers.get_all_records()
+    return pd.DataFrame(records) if records else pd.DataFrame(columns=["姓名", "電話", "地址"])
+
+def get_customer_info(name, df_cust):
+    match = df_cust[df_cust['姓名'] == name]
+    if not match.empty:
+        return match.iloc[0]['電話'], match.iloc[0]['地址']
+    return None, None
 
 # ==========================================
-# 3. 系統介面設計
+# 3. 系統介面 (前端展示)
 # ==========================================
-tab1, tab2, tab3 = st.tabs(["⚡ 快速建單", "📋 訂單看板與出貨", "👥 熟客資料庫"])
+st.title("📦 輕量化電商出貨後台系統 (雲端升級版)")
+
+tab1, tab2, tab3 = st.tabs(["⚡ 快速建單 (智慧解析)", "📋 訂單看板與出貨 (自動併單)", "👥 熟客資料庫"])
+
+df_customers = get_all_customers()
 
 # ----------------- 分頁 1: 快速建單 -----------------
 with tab1:
@@ -61,72 +75,100 @@ with tab1:
     with col3: name = st.text_input("客戶姓名", parsed['name'])
     with col4: qty = st.number_input("數量", value=int(parsed['qty']) if parsed['qty'].isdigit() else 1, min_value=1)
     
-    shipping = st.number_input("預設運費", value=100)
-    total_price = (price * qty) + shipping
-    st.info(f"💰 系統自動試算總金額：( {price} * {qty} ) + {shipping} = **{total_price}** 元")
-
     if name:
-        # 在 Google 試算表資料中尋找熟客
-        known_cust = df_customers[df_customers['姓名'] == name] if not df_customers.empty else pd.DataFrame()
-        
-        if not known_cust.empty:
-            phone = known_cust.iloc[0]['電話']
-            address = known_cust.iloc[0]['地址']
+        phone, address = get_customer_info(name, df_customers)
+        if phone and address:
             st.success(f"✅ 偵測到熟客！電話：{phone}, 地址：{address}")
             status = "可出貨"
         else:
-            st.warning("⚠️ 新客或缺少收件資訊，請手動補齊或先存為『待確認』")
+            st.warning("⚠️ 新客或缺少收件資訊，請手動補齊，或稍後再確認。")
             new_phone = st.text_input("補齊電話 (選填)")
             new_address = st.text_input("補齊地址 (選填)")
             status = "待確認" if not new_phone or not new_address else "可出貨"
             
-            msg = f"您好，您訂購的 [{item}] [{qty}] 個，加上運費總計為 [{total_price}] 元。麻煩您提供收件人的『電話』與『地址』以便為您安排出貨，謝謝！"
+            # 給客人的確認訊息 (這裡先不算運費，因為還沒併單)
+            msg = f"您好，您訂購的 [{item}] (單價${price}) 共 [{qty}] 個。麻煩您提供收件人的『電話』與『地址』以便為您安排出貨，謝謝！"
             st.text_area("複製給客人的確認訊息：", msg, height=100)
 
-    if st.button("💾 寫入雲端資料庫", type="primary"):
+    if st.button("💾 儲存訂單", type="primary"):
         if name and item:
             date_now = datetime.now().strftime("%Y-%m-%d %H:%M")
-            order_id = len(df_orders) + 1
+            # 寫入 Orders 工作表 (如果第一列是標題，會自動往加)
+            if len(sheet_orders.get_all_values()) == 0:
+                sheet_orders.append_row(["日期", "姓名", "品項", "數量", "單價", "狀態"])
+            sheet_orders.append_row([date_now, name, item, qty, price, status])
             
-            # 直接將一行資料寫入 Google 試算表
-            ws_orders.append_row([order_id, date_now, name, item, qty, price, shipping, total_price, status])
-            
-            # 如果有填寫新電話地址，寫入 Customers 試算表
+            # 如果是新客且有填資料，寫入 Customers
             if 'new_phone' in locals() and new_phone and new_address:
-                ws_customers.append_row([name, new_phone, new_address])
-                
-            st.success("✅ 訂單已成功寫入 Google 試算表！")
+                if len(sheet_customers.get_all_values()) == 0:
+                    sheet_customers.append_row(["姓名", "電話", "地址"])
+                sheet_customers.append_row([name, str(new_phone), str(new_address)])
+            
+            st.success("訂單已成功寫入 Google 試算表！")
             st.rerun()
 
-# ----------------- 分頁 2: 訂單看板與出貨 -----------------
+# ----------------- 分頁 2: 訂單看板與出貨 (自動併單核心) -----------------
 with tab2:
-    st.subheader("2. 雲端訂單與匯出")
-    st.dataframe(df_orders, use_container_width=True)
+    st.subheader("2. 訂單狀態與自動併單匯出")
     
-    st.divider()
-    df_ready = df_orders[df_orders['狀態'] == '可出貨'].copy() if not df_orders.empty else pd.DataFrame()
-    
-    if not df_ready.empty:
-        total_sum = df_ready['總金額'].sum()
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_ready.to_excel(writer, index=False, sheet_name='出貨單')
-            worksheet = writer.sheets['出貨單']
-            last_row = len(df_ready) + 2
-            worksheet.cell(row=last_row, column=7, value="總計金額:")
-            worksheet.cell(row=last_row, column=8, value=total_sum)
+    records_orders = sheet_orders.get_all_records()
+    if records_orders:
+        df_orders = pd.DataFrame(records_orders)
+        
+        # 顯示原始訂單資料
+        st.markdown("##### 📝 原始訂單明細 (尚未併單)")
+        st.dataframe(df_orders, use_container_width=True)
+        
+        st.divider()
+        st.markdown("##### 📦 準備出貨與匯出 Excel (滿3000免運，未滿60)")
+        
+        # 只抓取「可出貨」的訂單來併單
+        df_ready = df_orders[df_orders['狀態'] == '可出貨'].copy()
+        
+        if not df_ready.empty:
+            # 1. 結合熟客資料庫獲取電話地址
+            df_merged = pd.merge(df_ready, df_customers, on='姓名', how='left')
             
-        st.download_button(
-            label="📥 下載「可出貨」訂單 Excel",
-            data=output.getvalue(),
-            file_name=f"出貨單_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary"
-        )
+            # 2. 組合出貨明細字串與計算單項小計
+            df_merged['出貨明細'] = df_merged['品項'].astype(str) + "(單價$" + df_merged['單價'].astype(str) + " x" + df_merged['數量'].astype(str) + ")"
+            df_merged['商品小計'] = df_merged['單價'].astype(int) * df_merged['數量'].astype(int)
+            
+            # 3. 執行群組併單 (GroupBy)
+            df_consolidated = df_merged.groupby(['姓名', '電話', '地址']).agg({
+                '出貨明細': lambda x: '、\n'.join(x),
+                '商品小計': 'sum'
+            }).reset_index()
+            
+            # 4. 運費邏輯判斷
+            df_consolidated['運費'] = df_consolidated['商品小計'].apply(lambda x: 0 if x >= 3000 else 60)
+            df_consolidated['運費標示'] = df_consolidated['運費'].apply(lambda x: '免運' if x == 0 else '含運費')
+            df_consolidated['最終總金額'] = df_consolidated['商品小計'] + df_consolidated['運費']
+            
+            # 顯示併單後的結果
+            st.dataframe(df_consolidated, use_container_width=True)
+            
+            # 5. 匯出 Excel
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df_consolidated.to_excel(writer, index=False, sheet_name='出貨單')
+            excel_data = output.getvalue()
+            
+            st.download_button(
+                label="📥 下載最終出貨 Excel 表單",
+                data=excel_data,
+                file_name=f"合併出貨單_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
+            )
+        else:
+            st.info("目前沒有『可出貨』狀態的訂單可供併單。")
     else:
-        st.info("目前沒有『可出貨』狀態的訂單。")
+        st.info("試算表中尚無訂單資料。")
 
 # ----------------- 分頁 3: CRM 資料庫 -----------------
+with tab3:
+    st.subheader("3. 熟客名單 (連動 Google 試算表)")
+    st.dataframe(df_customers, use_container_width=True)
 with tab3:
     st.subheader("3. 雲端客戶通訊錄")
     st.dataframe(df_customers, use_container_width=True)
