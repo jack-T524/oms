@@ -204,3 +204,22 @@ with tab2:
             st.info("目前沒有『可出貨』狀態的訂單可供併單。")
     else:
         st.info("試算表中尚無訂單資料。")
+# ----------------- 分頁 3: CRM 資料庫 -----------------
+with tab3:
+    col_title, col_btn = st.columns([8, 2])
+    with col_title:
+        st.subheader("3. 熟客名單 (連動 Google 試算表)")
+    with col_btn:
+        # 加入一個手動重整按鈕，確保隨時看到最新資料
+        if st.button("🔄 重新整理清單", use_container_width=True):
+            st.rerun()
+
+    # 關鍵修正：在顯示表格前，強制「即時」再去抓一次最新資料
+    df_customers_latest = get_all_customers()
+    
+    # 防呆檢查：確保資料表不是真的全空
+    if not df_customers_latest.empty and len(df_customers_latest) > 0:
+        st.dataframe(df_customers_latest, use_container_width=True)
+        st.info(f"💡 目前資料庫中共有 {len(df_customers_latest)} 位熟客資料。")
+    else:
+        st.warning("目前試算表中尚未建立熟客資料，或系統正在同步中。")
